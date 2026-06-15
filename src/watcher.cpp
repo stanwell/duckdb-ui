@@ -35,13 +35,19 @@ bool WasCatalogUpdated(DatabaseInstance &db, Connection &connection,
 
     db_oids.insert(db_instance.oid);
     auto &catalog = db_instance.GetCatalog();
-    auto current_version = catalog.GetCatalogVersion(context);
-    auto last_version_it =
-        last_state.db_to_catalog_version.find(db_instance.oid);
-    if (last_version_it == last_state.db_to_catalog_version.end() // first time
-        || !(last_version_it->second == current_version)) {       // updated
-      has_change = true;
-      last_state.db_to_catalog_version[db_instance.oid] = current_version;
+    try {
+      auto current_version = catalog.GetCatalogVersion(context);
+      auto last_version_it =
+          last_state.db_to_catalog_version.find(db_instance.oid);
+      if (last_version_it == last_state.db_to_catalog_version.end() // first time
+          || !(last_version_it->second == current_version)) {       // updated
+        has_change = true;
+        last_state.db_to_catalog_version[db_instance.oid] = current_version;
+      }
+    } catch (const std::exception &) {
+      // Remote catalogs (e.g. quack) may not support versioning in a local
+      // transaction context. The OID is already tracked above for detachment
+      // detection; skip version tracking for this database.
     }
   }
 
@@ -91,10 +97,10 @@ void Watcher::Watch() {
         server.event_dispatcher->SendConnectedEvent(GetMDToken(con));
       }
     } catch (std::exception &ex) {
-      // Do not crash with uncaught exception, but quit.
-      std::cerr << "Error in watcher: " << ex.what() << std::endl;
-      std::cerr << "Will now terminate." << std::endl;
-      return;
+      // Log the error but keep the watcher running — transient failures
+      // (e.g. a remote quack catalog being temporarily unreachable) should
+      // not permanently break catalog change detection for local databases.
+      std::cerr << "Warning in watcher (will retry): " << ex.what() << std::endl;
     }
 
     {
